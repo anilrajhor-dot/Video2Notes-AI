@@ -4,6 +4,17 @@
    the network for model files, so offline mode can never send audio anywhere. */
 const LANG = { en: 'english', hi: 'hindi', bn: 'bengali', ta: 'tamil', te: 'telugu', mr: 'marathi', gu: 'gujarati', pa: 'punjabi', kn: 'kannada', ml: 'malayalam', ur: 'urdu' };
 let lib = null, asr = null, device = 'wasm', key = null;
+// When the page says "no remote", every fetch made inside this worker (by the library, ONNX Runtime, anything) is answered
+// from Cache Storage only. A cache miss fails immediately and NEVER reaches the network.
+const realFetch = self.fetch.bind(self);
+function setNetwork(allowed) {
+  self.fetch = allowed ? realFetch : async (input, init) => {
+    const req = input instanceof Request ? input : new Request(input, init);
+    const hit = await caches.match(req, { ignoreVary: true });
+    if (hit) return hit;
+    throw new TypeError('Network blocked (offline mode): ' + String(req.url).slice(0, 140));
+  };
+}
 
 async function build(model, dev, onp) {
   const dtype = dev === 'webgpu' ? { encoder_model: 'fp32', decoder_model_merged: 'q4' } : 'q8';
@@ -14,6 +25,7 @@ self.onmessage = async (ev) => {
   const m = ev.data;
   try {
     if (m.type === 'load') {
+      setNetwork(!!m.allowRemote);
       const base = `https://cdn.jsdelivr.net/npm/@huggingface/transformers@${m.ver}/dist/`;
       if (!lib) {
         try { lib = await import(base + 'transformers.min.js'); }
@@ -39,7 +51,7 @@ self.onmessage = async (ev) => {
     } else if (m.type === 'reset') { asr = null; key = null; self.postMessage({ type: 'reset-done', id: m.id }); }
   } catch (e) {
     let msg = String(e && e.message || e);
-    if (m.type === 'load' && !m.allowRemote && /Failed to fetch|NetworkError|not allowed|Could not locate file|local_files_only|allowRemoteModels|Unauthorized access|404/i.test(msg))
+    if (m.type === 'load' && !m.allowRemote && /Network blocked|Failed to fetch|NetworkError|not allowed|Could not locate file|local_files_only|allowRemoteModels|Unauthorized access|404/i.test(msg))
       msg = 'The speech model is not stored on this device. Open Settings while online and press "Install / repair".';
     self.postMessage({ type: 'error', id: m.id, message: msg });
   }

@@ -1,8 +1,10 @@
 /* Video2Notes service worker. Lets the app open offline and serves the speech-engine files (cdn.jsdelivr.net) from cache.
    It never caches or touches AI-provider calls, proxy calls, or model downloads (those are stored by the app itself). */
-const V = 'v2n-shell-3';
+const VERSION = '3.1.0';                    // bump on every release; the page offers the update, it never swaps under a running job
+const V = 'v2n-shell-' + VERSION;
 const SHELL = ['./', './asr-worker.js', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
-self.addEventListener('install', e => e.waitUntil((async () => { const c = await caches.open(V); await c.addAll(SHELL); self.skipWaiting(); })()));
+self.addEventListener('install', e => e.waitUntil((async () => { const c = await caches.open(V); await c.addAll(SHELL); })()));
+self.addEventListener('message', e => { if (e.data === 'SKIP_WAITING') self.skipWaiting(); else if (e.data === 'VERSION' && e.source) e.source.postMessage({ version: VERSION }); });
 self.addEventListener('activate', e => e.waitUntil((async () => { for (const k of await caches.keys()) if (k.startsWith('v2n-shell') && k !== V) await caches.delete(k); await self.clients.claim(); })()));
 self.addEventListener('fetch', e => {
   const r = e.request; if (r.method !== 'GET') return; const u = new URL(r.url);

@@ -61,6 +61,7 @@ dialog{border:0;border-radius:14px;max-width:min(640px,94vw);width:100%;padding:
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}.chip{background:#eef3fb;color:var(--navy);border:0;border-radius:99px;padding:3px 10px;font-size:12px;cursor:pointer}.chip:disabled{opacity:.5;cursor:default}
 .toolbar{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
 .unc{background:#fff4dd;border-radius:3px}
+.diagrow{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line)}.dot{width:11px;height:11px;border-radius:50%;margin-top:6px;flex:none}
 
 </style>
 </head>
@@ -74,6 +75,7 @@ dialog{border:0;border-radius:14px;max-width:min(640px,94vw);width:100%;padding:
 </header>
 <nav><button id="tabNew" class="act">New document</button><button id="tabHist">My Previous Documents</button></nav>
 <main>
+<div id="updBar" class="msg info hidden">A new version of Video2Notes is ready. <button class="btn sm" id="updBtn">Update now</button> <span class="meta">Your documents, saved videos and models are kept.</span></div>
 <div id="banner"></div>
 
 <!-- NEW -->
@@ -161,7 +163,7 @@ dialog{border:0;border-radius:14px;max-width:min(640px,94vw);width:100%;padding:
   <div class="card">
     <div class="row"><button class="btn sec" id="addSec">+ Add section</button><button class="btn" id="saveDoc">Save changes</button></div>
     <h2 style="margin-top:16px">Download</h2>
-    <div class="row"><button class="btn acc" data-dl="docx">Download Word (.docx)</button><button class="btn acc" data-dl="pdf">Download PDF</button><button class="btn sec" data-dl="txt">Download Text (.txt)</button></div>
+    <div class="row"><button class="btn acc" data-dl="docx">Download Word (.docx)</button><button class="btn acc" data-dl="pdf">Download PDF</button><button class="btn acc" data-dl="pdftext" title="Same look as the PDF, plus an invisible text layer so you can search, select and copy text (Hindi, Telugu…)">Download searchable PDF</button><button class="btn sec" data-dl="txt">Download Text (.txt)</button></div>
     <div class="meta" id="dlNote" style="margin-top:6px"></div>
   </div>
 </section>
@@ -36658,7 +36660,8 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
 <script>
 /* Video2Notes – exporters that run in the browser: Word (.docx), PDF, TXT.
    PDF pages are drawn with the browser's own text engine, so Hindi, Telugu and mixed text are shaped correctly
-   with the device's fonts, then packed into a PDF (pages are images: print/share-ready, but text is not selectable). */
+   with the device's fonts, then packed into a PDF. Two kinds: image PDF (pages are pictures) and searchable PDF (the same pictures plus an
+   invisible Unicode text layer, so text can be selected, searched and copied in Hindi, Telugu etc.). */
 (function () {
   'use strict';
   const C = window.V2NCore;
@@ -36804,38 +36807,54 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
   function renderPage(ops, i, n, doc) {
     const cv = document.createElement('canvas'); cv.width = PW; cv.height = PH; const g = cv.getContext('2d');
     g.fillStyle = '#fff'; g.fillRect(0, 0, PW, PH); g.textBaseline = 'alphabetic';
+    const texts = []; const sz = f => +((String(f).match(/(\d+(?:\.\d+)?)px/) || [])[1] || 20);
     ops.forEach(o => {
-      if (o.t === 'text') { g.font = o.f; g.fillStyle = o.c; g.fillText(o.s, o.x, o.y); }
+      if (o.t === 'text') { g.font = o.f; g.fillStyle = o.c; g.fillText(o.s, o.x, o.y); if (o.s && o.s.trim()) texts.push({ s: o.s, x: o.x, y: o.y, size: sz(o.f), w: g.measureText(o.s).width }); }
       else if (o.t === 'rect') { g.fillStyle = o.c; g.fillRect(o.x, o.y, o.w, o.h); }
       else if (o.t === 'box') { g.strokeStyle = '#B8C2D0'; g.lineWidth = 2; g.strokeRect(o.x, o.y, o.w, o.h); }
     });
     g.font = fnt(18, false); g.fillStyle = '#666'; g.textAlign = 'right'; g.fillText(doc.title.slice(0, 80), PW - MR, 90); g.textAlign = 'left';
     g.fillText('Video2Notes  •  ' + doc.date, ML, PH - 90); g.textAlign = 'right'; g.fillText(`Page ${i + 1} of ${n}`, PW - MR, PH - 90);
+    ops.texts = texts;
     return new Promise(res => cv.toBlob(b => b.arrayBuffer().then(buf => { cv.width = cv.height = 1; res(new Uint8Array(buf)); }), 'image/jpeg', 0.86));
   }
 
-  function assemble(jpegs, title) {
+  function assemble(jpegs, title, pageTexts) {
     const enc = new TextEncoder(); const parts = []; let len = 0; const offs = [];
     const push = b => { const u = typeof b === 'string' ? enc.encode(b) : b; parts.push(u); len += u.length; };
     const obj = (n, body) => { offs[n] = len; push(`${n} 0 obj\n`); push(body); push('\nendobj\n'); };
     push('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n'); const n = jpegs.length;
+    const cids = new Map(), F = 4 + n * 3, S = 595.28 / PW; const withText = !!pageTexts;
+    const cidOf = ch => { let c = cids.get(ch); if (!c) { c = cids.size + 1; cids.set(ch, c); } return c; };
+    const hex4 = v => v.toString(16).padStart(4, '0');
+    const layer = i => { if (!withText) return ''; let o = 'BT\n3 Tr\n'; for (const t of pageTexts[i]) { const cps = [...t.s]; if (!cps.length) continue; const size = t.size * S; const tz = Math.max(10, Math.min(400, 100 * (t.w * S) / (size * cps.length))); o += `/F1 ${size.toFixed(2)} Tf ${tz.toFixed(1)} Tz 1 0 0 1 ${(t.x * S).toFixed(2)} ${((PH - t.y) * S).toFixed(2)} Tm <${cps.map(ch => hex4(cidOf(ch)) ).join('')}> Tj\n`; } return o + 'ET\n'; };
     obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
     obj(2, `<< /Type /Pages /Count ${n} /Kids [${jpegs.map((_, i) => `${4 + i * 3} 0 R`).join(' ')}] >>`);
     obj(3, `<< /Title (${title.replace(/[^\x20-\x7e]/g, '?').replace(/[()\\]/g, '')}) /Producer (Video2Notes) >>`);
     // objects: 1 catalog, 2 pages, 3 info, then per page: page 4+3i, content 5+3i, image 6+3i
     jpegs.forEach((j, i) => {
-      const pg = 4 + i * 3, ct = 5 + i * 3, im = 6 + i * 3; const stream = `q 595.28 0 0 841.89 0 0 cm /Im0 Do Q`;
-      obj(pg, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Resources << /XObject << /Im0 ${im} 0 R >> >> /Contents ${ct} 0 R >>`);
+      const pg = 4 + i * 3, ct = 5 + i * 3, im = 6 + i * 3; const stream = `q 595.28 0 0 841.89 0 0 cm /Im0 Do Q\n` + layer(i);
+      obj(pg, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Resources << /XObject << /Im0 ${im} 0 R >>${withText ? ` /Font << /F1 ${F} 0 R >>` : ''} >> /Contents ${ct} 0 R >>`);
       obj(ct, `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
       offs[im] = len; push(`${im} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${PW} /Height ${PH} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${j.length} >>\nstream\n`); push(j); push('\nendstream\nendobj\n');
     });
-    const total = 4 + n * 3; const xref = len; let x = `xref\n0 ${total}\n0000000000 65535 f \n`;
+    if (withText) {
+      const u16 = ch => { const c = ch.codePointAt(0); if (c < 0x10000) return hex4(c); const v = c - 0x10000; return hex4(0xD800 + (v >> 10)) + hex4(0xDC00 + (v & 0x3FF)); };
+      const ents = [...cids.entries()]; let cm = '/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n';
+      for (let k = 0; k < ents.length; k += 100) { const ch = ents.slice(k, k + 100); cm += ch.length + ' beginbfchar\n' + ch.map(([c, id]) => `<${hex4(id)}> <${u16(c)}>`).join('\n') + '\nendbfchar\n'; }
+      cm += 'endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend';
+      obj(F, `<< /Type /Font /Subtype /Type0 /BaseFont /Video2NotesText /Encoding /Identity-H /DescendantFonts [${F + 1} 0 R] /ToUnicode ${F + 3} 0 R >>`);
+      obj(F + 1, `<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Video2NotesText /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ${F + 2} 0 R /DW 1000 /CIDToGIDMap /Identity >>`);
+      obj(F + 2, '<< /Type /FontDescriptor /FontName /Video2NotesText /Flags 4 /FontBBox [0 -200 1000 900] /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 >>');
+      obj(F + 3, `<< /Length ${cm.length} >>\nstream\n${cm}\nendstream`);
+    }
+    const total = 4 + n * 3 + (withText ? 4 : 0); const xref = len; let x = `xref\n0 ${total}\n0000000000 65535 f \n`;
     for (let i = 1; i < total; i++) x += String(offs[i] || 0).padStart(10, '0') + ' 00000 n \n';
     push(x + `trailer\n<< /Size ${total} /Root 1 0 R /Info 3 0 R >>\nstartxref\n${xref}\n%%EOF`);
     return new Blob(parts, { type: 'application/pdf' });
   }
 
-  async function pdf(doc, onProgress) {
+  async function pdf(doc, onProgress, withText) {
     try { await document.fonts.ready; } catch (_) { }
     const L = layout(doc);
     // contents list (needs real page numbers, known after layout)
@@ -36850,9 +36869,9 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
         L.pages[pg].push({ t: 'text', x: ML + ind + m.measureText(t).width + 10, y: yy + 22, s: dots, f: fnt(20), c: '#999' }); yy += 34;
       });
     }
-    const n = L.pages.length, jpegs = [];
-    for (let i = 0; i < n; i++) { onProgress && onProgress(i, n); jpegs.push(await renderPage(L.pages[i], i, n, doc)); }
-    return assemble(jpegs, doc.title);
+    const n = L.pages.length, jpegs = [], texts = [];
+    for (let i = 0; i < n; i++) { onProgress && onProgress(i, n); jpegs.push(await renderPage(L.pages[i], i, n, doc)); texts.push(L.pages[i].texts || []); }
+    return assemble(jpegs, doc.title, withText ? texts : null);
   }
 
   // ---------------------------------------------------------------- save / entry
@@ -36867,6 +36886,7 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
     if (fmt === 'txt') return save(txt(doc), base + '.txt');
     if (fmt === 'docx') return save(await docx(doc), base + '.docx');
     if (fmt === 'pdf') return save(await pdf(doc, onProgress), base + '.pdf');
+    if (fmt === 'pdftext') return save(await pdf(doc, onProgress, true), base + '_searchable.pdf');
     throw new Error('Unknown format');
   }
   window.V2NExport = { txt, docx, pdf, save, exportDoc, safeName };
@@ -36982,7 +37002,8 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
       this.w.onerror = () => { this.pending.forEach(p => p.rej(new Error('The speech engine crashed (probably out of memory). Try a smaller model or a shorter video.'))); this.pending.clear(); this.w = null; };
       return this.w;
     },
-    call(msg, transfer) { const w = this.ensure(); const id = ++this.id; return new Promise((res, rej) => { this.pending.set(id, { res, rej }); w.postMessage(Object.assign({ id }, msg), transfer || []); }); },
+    // a worker that dies silently (out of memory on a phone) would leave this waiting forever, so every call has a generous deadline
+    call(msg, transfer, ms) { const w = this.ensure(); const id = ++this.id; ms = ms || (msg.type === 'transcribe' ? 25 * 60e3 : 10 * 60e3); return new Promise((res, rej) => { const t = setTimeout(() => { this.pending.delete(id); this.reset(); rej(new Error('The speech engine stopped responding (the device may have run out of memory). Finished parts are saved: press Resume, or try a smaller model.')); }, ms); this.pending.set(id, { res: v => { clearTimeout(t); res(v); }, rej: e => { clearTimeout(t); rej(e); } }); w.postMessage(Object.assign({ id }, msg), transfer || []); }); },
     load(model, allowRemote) { const m = Engine.meta(); return this.call({ type: 'load', model, allowRemote: !!allowRemote, webgpu: Cap.webgpu, ver: m && m.ver }); },
   };
 
@@ -37097,6 +37118,7 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
   async function wakeLock() { try { return await navigator.wakeLock.request('screen'); } catch (_) { return null; } }
   async function saveJob(job, notify) { job.updated = Date.now(); await DB.put('jobs', job); notify && notify(job); }
   const running = new Set();
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && running.size) wakeLock(); });   // the screen lock is released when the app is hidden; take it again
 
   async function runLocal(job, notify) {
     if (running.has(job.id)) return; running.add(job.id); const lock = await wakeLock();
@@ -37143,8 +37165,8 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
       await DB.put('docs', { id: job.id, title: job.title, doc, created: job.created, updated: Date.now(), where: 'local', transcript: segs, clean, duration: job.duration, opts: job.opts, missing, hasVideo: !!job.hasVideo, warnings: warns });
       job.warnings = warns; job.status = 'done'; job.pct = 100; job.message = 'Document ready'; await saveJob(job, notify);
       await Audio_.remove(job.id);
-    } catch (e) { job.status = 'error'; job.error = e.message || String(e); await saveJob(job, notify); }
-    finally { running.delete(job.id); lock && lock.release && lock.release(); }
+    } catch (e) { job.status = 'error'; job.error = /QuotaExceeded|Storage full/i.test(e.name + e.message) ? 'The device is out of storage. Free some space, then press Resume – finished parts are kept.' : (e.message || String(e)); try { await saveJob(job, notify); } catch (_) { notify && notify(job); } }
+    finally { running.delete(job.id); lock && lock.release && lock.release(); if (Cap.isMobile && !running.size) Worker_.reset(); }   // hand the model's memory back on phones
   }
   async function startLocal(file, title, opts, notify) {
     const job = { id: 'L' + Date.now().toString(36) + C.rid(), title, where: 'local', status: 'queued', stage: 'uploaded', pct: 0, opts, size: file.size, created: Date.now(), segs: [], donePart: 0, nParts: 0, warnings: [] };
@@ -37190,6 +37212,9 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
   const ready = () => proxy() ? { speech: true, text: true, proxy: true } : { speech: !!KEYS.get('openai'), text: prov() === 'anthropic' ? !!KEYS.get('anthropic') : !!KEYS.get('openai') };
   const target = (vendor, path, headers) => { const p = proxy(); if (p) return [p + '/' + vendor + path, Object.assign({ 'X-Access-Code': KEYS.get('access') }, headers)]; return [(vendor === 'openai' ? 'https://api.openai.com' : 'https://api.anthropic.com') + path, headers]; };
   class AIError extends Error { }
+  // A plain record, kept only on this device, of everything that was sent to an AI service (sizes only, never content).
+  const sendLog = () => { try { return JSON.parse(localStorage.getItem('v2n_sendlog') || '[]'); } catch (_) { return []; } };
+  const logSend = (kind, bytes) => { const l = sendLog(); l.push({ t: Date.now(), kind, bytes, to: proxy() ? 'secure proxy' : (kind === 'audio' || prov() === 'openai' ? 'OpenAI' : 'Anthropic') }); try { localStorage.setItem('v2n_sendlog', JSON.stringify(l.slice(-80))); } catch (_) { } };
   const fmtTs = V.fmtTs;
   const parseTs = v => { if (typeof v === 'number') return v; const p = (String(v || '').match(/\d+/g) || []).map(Number).slice(-3); return p.reduce((a, x) => a * 60 + x, 0); };
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -37235,6 +37260,7 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
       if (language && language !== 'auto') fd.append('language', language);
       if (diar) { fd.append('response_format', 'diarized_json'); fd.append('chunking_strategy', 'auto'); }
       else { fd.append('response_format', 'verbose_json'); fd.append('timestamp_granularities[]', 'segment'); if (prompt) fd.append('prompt', prompt.slice(-400)); }
+      logSend('audio', f32.length * 2);
       const [url, hd] = target('openai', '/v1/audio/transcriptions', key && !proxy() ? { Authorization: 'Bearer ' + key } : {});
       return (await http(() => fetch(url, { method: 'POST', headers: hd, body: fd }))).json();
     };
@@ -37250,7 +37276,7 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
     return segs;
   }
   async function llmRaw(system, user, json, max) {
-    const M = MODELS();
+    const M = MODELS(); logSend('text', system.length + user.length);
     if (prov() === 'anthropic') {
       const key = KEYS.get('anthropic'); if (!key && !proxy()) throw new AIError('No Anthropic API key is set. Open Settings.');
       const [url, hd] = target('anthropic', '/v1/messages', proxy() ? { 'content-type': 'application/json' } : { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true', 'content-type': 'application/json' });
@@ -37339,10 +37365,11 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
   async function run(id) {
     if (running.has(id)) return; running.add(id);
     let lock = null; try { lock = await navigator.wakeLock.request('screen'); } catch (_) { }
+    const vis = async () => { if (!document.hidden) { try { lock = await navigator.wakeLock.request('screen'); } catch (_) { } } }; document.addEventListener('visibilitychange', vis);
     let j = await get(id);
     try { await _run(j); }
     catch (e) { j = await get(id); j.status = 'error'; j.error = e instanceof AIError ? e.message : `Unexpected problem: ${e.message || e}. Press Retry – finished parts are kept.`; await put(j); }
-    finally { running.delete(id); lock && lock.release && lock.release(); }
+    finally { running.delete(id); document.removeEventListener('visibilitychange', vis); lock && lock.release && lock.release(); }
   }
   const scriptHint = (script) => script === 'devanagari' ? 'यह हिंदी और अंग्रेज़ी में बातचीत है।' : script === 'roman' ? 'Yeh Hindi aur English mein baatcheet hai.' : '';
   async function _run(j) {
@@ -37397,8 +37424,8 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
     const want = ['core', 'training', 'mcq', 'ppt', 'mind'].filter(k => need[k]).filter(k => !j.parts[k]);
     if (want.length) {
       const w = windows(gsegs); const total = dur || gsegs[gsegs.length - 1].end;
-      if (!j.notes || j.notes.length < 1 || !j.notesDone) {
-        j.notes = j.notes || [];
+      if (!j.notes || j.notes.length < 1 || !j.notesDone || !j.condensed) {
+        j.notes = j.notes || [];     // (documents made by an older version have finished notes but no condensed copy: only condense them)
         for (let i = j.notes.length; i < w.length; i++) { await prog(j, 'summary', 0.5 * i / w.length, `Reading section ${i + 1} of ${w.length}`); j.notes.push(await mapWindow(w[i], o.out_lang, glossary)); await put(j); }
         let notes = j.notes; while (JSON.stringify(notes).length > 60000 && notes.length > 1) { const g = []; for (let i = 0; i < notes.length; i += 4) g.push(await condense(notes.slice(i, i + 4))); notes = g; }
         j.condensed = notes; j.notesDone = true; await put(j);
@@ -37504,7 +37531,7 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
   // jobs that were running when the page closed are marked so the user can press Retry (finished parts are kept)
   const recover = () => DB.all(STORE).then(js => js.forEach(j => { if (['running', 'queued'].includes(j.status) && !running.has(j.id)) { j.status = 'error'; j.error = 'Processing was interrupted when the page was closed. Press Retry – finished parts are kept.'; put(j); } }));
   recover();
-  window.V2N_CLOUD = { busy: () => running.size, KEYS, ready, prov, MODELS, proxy, removeJobData, STORE };
+  window.V2N_CLOUD = { sendLog, clearSendLog: () => localStorage.removeItem('v2n_sendlog'), busy: () => running.size, KEYS, ready, prov, MODELS, proxy, removeJobData, STORE };
 })();
 
 </script>
@@ -37781,7 +37808,8 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
   function renderEditor() {
     const d = ed.doc; $('#dTitle').value = d.title;
     const w = []; (ed.meta.warnings || []).forEach(x => w.push(`<div class="msg warn">${esc(x)}</div>`));
-    const miss = ed.rec && ed.rec.missing && ed.rec.missing.length ? ed.rec.missing.map(k => (Core.OUTPUTS.find(o => o.key === k) || {}).label).filter(Boolean) : [];
+    const missKeys = ed.rec ? (ed.rec.missing && ed.rec.missing.length ? ed.rec.missing : (ed.rec.needsSummary ? ['exec'] : [])) : [];   // needsSummary = documents saved by older versions
+    const miss = missKeys.length ? missKeys.map(k => (Core.OUTPUTS.find(o => o.key === k) || {}).label).filter(Boolean) : [];
     if (miss.length) w.push(`<div class="msg info">Not created on this device (they need AI): <b>${esc(miss.join(', '))}</b>. <button class="btn sm" id="mkSum">Create missing outputs online</button><div class="meta">Sends the transcript <b>text</b> (never the video) to the cloud AI, only when you press this and confirm.</div></div>`);
     w.push('<div class="msg info">AI-generated parts are labelled. Please check names, dates and figures against the video.</div>');
     $('#dWarn').innerHTML = w.join('');
@@ -37899,6 +37927,48 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
   }
 
   // ------------------------------------------------------------ settings / models
+  // ------------------------------------------------------------ system readiness check
+  async function diagnose() {
+    const rows = []; const add = (id, name, st, text, act) => rows.push({ id, name, st, text, act });
+    const online = await V.Net.check(); add('net', 'Internet', online ? 'ok' : 'warn', online ? 'Connected.' : 'Not connected. On-device work and saved documents still work; cloud AI, links and model downloads wait.');
+    // app shell + service worker
+    let swv = '', ctl = false, shell = false;
+    try { ctl = !!(navigator.serviceWorker && navigator.serviceWorker.controller); shell = !!(await caches.match('./')); if (ctl) swv = await new Promise(res => { const h = e => { if (e.data && e.data.version) { navigator.serviceWorker.removeEventListener('message', h); res(e.data.version); } }; navigator.serviceWorker.addEventListener('message', h); navigator.serviceWorker.controller.postMessage('VERSION'); setTimeout(() => res(''), 1500); }); } catch (_) { }
+    add('shell', 'App opens offline', ctl && shell ? 'ok' : 'bad', ctl && shell ? 'Stored on this device' + (swv ? ' (version ' + swv + ')' : '') + '.' : (!('serviceWorker' in navigator) ? 'This browser cannot store the app for offline use (private mode or an old browser).' : 'Not stored yet. Open this page once while online and reload it.'));
+    // speech engine
+    const meta = V.Engine.meta(), miss = meta ? await V.Engine.missing() : ['engine'];
+    add('engine', 'Speech engine files', !meta ? 'bad' : miss.length ? 'bad' : 'ok', !meta ? 'Not installed.' : miss.length ? 'Missing: ' + miss.join(', ') : `Stored (${meta.files.length} files, engine ${meta.ver}).`, online ? { k: 'repair', l: meta ? 'Repair' : 'Install' } : null);
+    const a = V.Models.asr(); let mf = 0; try { const c = await caches.open('transformers-cache'); mf = a ? (await c.keys()).filter(r => r.url.includes(a.id)).length : 0; } catch (_) { }
+    add('model', 'Speech model', !a ? 'bad' : mf ? 'ok' : 'bad', !a ? 'No model installed. Needed for on-device transcription.' : mf ? `${a.id.split('/')[1]} stored (${mf} files).` : 'Model files are missing from this device.', online ? { k: 'repair', l: a ? 'Repair' : 'Install a model' } : null);
+    add('verify', 'Offline verification', !a || !mf ? 'bad' : a.verified ? 'ok' : 'warn', !a ? 'Nothing to verify.' : a.verified ? 'Passed on ' + new Date(a.verified).toLocaleString() + ' (loaded with the network blocked).' : 'Not verified yet.', a && mf ? { k: 'verify', l: 'Verify now' } : null);
+    const llm = V.Models.llm(); add('llm', 'Local AI model (optional)', llm ? 'ok' : 'info', llm ? 'Installed: ' + llm.id : (V.Cap.webgpu ? 'Not installed. Without it, summaries and other AI outputs need the cloud AI.' : 'This device has no WebGPU, so a local language model cannot run here.'));
+    let st = null; try { st = await V.Models.storage(); } catch (_) { } let per = false; try { per = await navigator.storage.persisted(); } catch (_) { }
+    if (st) { const free = st.quota - st.used; add('storage', 'Storage', free < 3e8 ? 'bad' : free < 1e9 ? 'warn' : per ? 'ok' : 'warn', `${(free / 1e9).toFixed(1)} GB free of ${(st.quota / 1e9).toFixed(1)} GB. ${per ? 'The browser has promised to keep your data.' : 'The browser may clear data if the device runs low.'}`, per ? null : { k: 'persist', l: 'Keep my data' }); }
+    else add('storage', 'Storage', 'warn', 'Cannot be measured in this browser.');
+    // export engines: really build small files
+    let ex = [], exbad = [];
+    try { const X = window.V2NExport, d = { title: 'Check', source: '', date: '', outputs: [], transcript_style: 'clean', note: '', sections: [{ id: 'a', heading: 'Test', level: 1, body: 'नमस्ते తెలుగు 1,50,000\n- a\n- b', ai: false }] };
+      const t = X.txt(d); (t && t.size > 10 ? ex : exbad).push('TXT'); const w = await X.docx(d); (w.size > 2000 ? ex : exbad).push('Word');
+      const p = await X.pdf(d), pb = new Uint8Array(await p.slice(0, 5).arrayBuffer()); (String.fromCharCode(...pb) === '%PDF-' ? ex : exbad).push('PDF'); const q = await X.pdf(d, null, true); (q.size > p.size ? ex : exbad).push('searchable PDF'); } catch (e) { exbad.push(e.message); }
+    add('export', 'Document export', exbad.length ? 'bad' : 'ok', exbad.length ? 'Failed: ' + exbad.join(', ') : 'Built test files successfully: ' + ex.join(', ') + '.');
+    const r = cfg; add('cloud', 'Cloud AI (optional)', r.speech_ready && r.text_ready ? 'ok' : r.speech_ready ? 'warn' : 'info', r.proxy ? 'Secure proxy configured.' : r.speech_ready ? (r.text_ready ? 'Keys set in this browser.' : 'Speech key set; no text-AI key (transcript-only works).') : 'Not set up. On-device mode works without it.');
+    return rows;
+  }
+  const DOT = { ok: '#1b8a4b', warn: '#b26a00', bad: '#b3261e', info: '#8a96a6' };
+  async function runDiag(d) {
+    const box = d.querySelector('#diag'); box.innerHTML = '<div class="meta">Checking…</div>'; let rows;
+    try { rows = await diagnose(); } catch (e) { box.innerHTML = '<div class="msg err">Check failed: ' + esc(e.message) + '</div>'; return; }
+    box.innerHTML = rows.map(r => `<div class="diagrow" data-id="${r.id}"><span class="dot" style="background:${DOT[r.st]}" title="${r.st}"></span><div style="flex:1;min-width:0"><b>${esc(r.name)}</b> <span class="tag">${{ ok: 'OK', warn: 'Attention', bad: 'Problem', info: 'Info' }[r.st]}</span><div class="meta">${esc(r.text)}</div><div class="meta prog"></div></div>${r.act ? `<button class="btn sm" data-diag="${r.act.k}">${r.act.l}</button>` : ''}</div>`).join('');
+  }
+  async function diagAction(d, b) {
+    const row = b.closest('.diagrow'), pr = row.querySelector('.prog'), k = b.dataset.diag; b.disabled = true; const onp = p => { pr.textContent = p.text || (p.file ? p.file.split('/').pop() + (p.progress ? ' ' + Math.round(p.progress) + '%' : '') : ''); };
+    try {
+      if (k === 'repair') { const a = V.Models.asr(); await V.installAsr(a ? a.id : (V.Cap.isMobile ? 'onnx-community/whisper-base' : 'onnx-community/whisper-small'), onp); }
+      else if (k === 'verify') { const r = await V.Models.verify(onp); if (!r.ok) throw new Error(r.problems.join(' ')); }
+      else if (k === 'persist') { const ok = await V.Models.persist(); if (!ok) throw new Error('The browser declined. Installing the app to the home screen usually makes it agree.'); }
+      runDiag(d);
+    } catch (e) { pr.innerHTML = '<span style="color:#b3261e">' + esc(e.message) + '</span>'; b.disabled = false; }
+  }
   async function openSettings() {
     const st = await V.Models.storage(); const asr = V.Models.asr(), llm = V.Models.llm(), C = V.Cap;
     const gb = x => (x / 1e9).toFixed(1) + ' GB';
@@ -37909,7 +37979,9 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
       <label>Secure proxy address (recommended)</label><input type="text" id="kPx" value="${esc(K.get('proxy'))}" placeholder="https://video2notes-proxy.yourname.workers.dev"><label>Access code for the proxy</label><input type="password" id="kAc" value="${esc(K.get('access'))}" autocomplete="off">
       <div class="meta">${px ? '<b>Proxy mode is on:</b> the keys below are not used.' : 'Leave the proxy empty to use your own keys directly from this browser.'}</div>
       <label>Summary AI</label><select id="kProv"><option value="openai" ${window.V2N_CLOUD.prov() === 'openai' ? 'selected' : ''}>OpenAI</option><option value="anthropic" ${window.V2N_CLOUD.prov() === 'anthropic' ? 'selected' : ''}>Anthropic (Claude)</option></select><label>OpenAI API key (speech recognition + summaries)</label><input type="password" id="kOai" value="${esc(K.get('openai'))}" autocomplete="off" placeholder="sk-…"><label>Anthropic API key (only if used for summaries)</label><input type="password" id="kAnt" value="${esc(K.get('anthropic'))}" autocomplete="off" placeholder="sk-ant-…"><div class="row" style="margin-top:8px"><button class="btn sm" id="kSave">Save</button><button class="btn sm danger" id="kClear">Remove keys from this browser</button></div>`;
-    dialog(`<h2 style="margin-top:0">Settings &amp; offline models</h2>${keyBox}
+    const sl = window.V2N_CLOUD.sendLog().slice(-12).reverse();
+    dialog(`<h2 style="margin-top:0">Settings &amp; offline models</h2>
+      <h3>System readiness check</h3><div id="diag"></div><div class="row" style="margin-top:6px"><button class="btn sm sec" id="diagRun">Run the check again</button></div>${keyBox}
       <h3>Glossary (banking, names, technical terms)</h3><div class="meta">One term per line: <code>Preferred spelling = variant | variant</code>. Used to bias cloud speech recognition and to correct transcripts. Lines starting with # are comments.</div><textarea id="gl" rows="7" style="font-family:monospace;font-size:13px">${esc(getGlossary())}</textarea><div class="row" style="margin-top:6px"><button class="btn sm" id="glSave">Save glossary</button><button class="btn sm sec" id="glReset">Restore default list</button></div>
       <div class="msg info" style="margin-top:12px"><b>What works offline?</b> Installing this app only lets it <i>open</i> offline. <b>Transcribing</b> offline needs a speech model stored on this device (below). <b>Summaries</b> offline need a local language model and a WebGPU device (desktop/laptop). Word, PDF and text files can always be created on this device. Cloud processing, links and AI editing need the internet.</div>
       <p class="meta">This device: ${C.isMobile ? 'phone/tablet' : 'computer'} · WebGPU ${C.webgpu ? 'available' : 'not available'}${C.memGB ? ' · ~' + C.memGB + ' GB RAM reported' : ''} · storage ${st ? gb(st.used) + ' used of ~' + gb(st.quota) : 'unknown'}.<br>On-device limits: ${C.maxFileMB} MB and ${C.maxMinutes} min per video.</p>
@@ -37922,10 +37994,12 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
       ${llm ? '<button class="btn sm danger" data-rm="llm">Remove language model</button>' : ''}
       <h3>Cloud limits &amp; cost</h3><div class="meta">${cfg.speech_ready ? 'Speech recognition: ready.' : '<b>Speech key/proxy not set.</b>'} ${cfg.text_ready ? 'Summary AI (' + esc(cfg.provider) + '): ready.' : '<b>Summary AI key/proxy not set.</b>'} Limits: ${cfg.max_upload_mb || '?'} MB, ${cfg.max_duration_min || '?'} min per video. Usage is billed to the account whose key is used (about US$${cfg.cost_per_min || '?'} per audio minute for speech, plus summary tokens).</div>
       <h3>Install this app</h3><div class="meta">iPhone/iPad (Safari): Share → <b>Add to Home Screen</b>. Android (Chrome): menu → <b>Install app</b>. Windows/Mac (Chrome/Edge): install icon in the address bar. Mac Safari: File → <b>Add to Dock</b>.</div>
+      <h3>What has been sent to an AI service</h3><div class="meta">A record kept only on this device (sizes only, never content). Nothing is sent in on-device mode.</div>${sl.length ? sl.map(x => `<div class="meta">${new Date(x.t).toLocaleString()} · ${x.kind === 'audio' ? 'audio ' + (x.bytes / 1e6).toFixed(1) + ' MB' : 'text ' + Math.round(x.bytes / 1000) + ' k characters'} → ${esc(x.to)}</div>`).join('') : '<div class="meta">Nothing has been sent from this browser.</div>'}${sl.length ? '<button class="btn sm sec" id="slClear">Clear this record</button>' : ''}
       <h3>Your data</h3><div class="meta">Documents, saved videos, audio pieces, models and keys are stored only in this browser. Deleting is permanent.</div>
       <div class="row" style="margin-top:6px"><button class="btn sm danger" id="delAll">Delete all my data from this device</button></div>
       <div class="row" style="margin-top:14px"><button class="btn" id="cl">Close</button></div>`, d => {
       d.querySelector('#cl').onclick = () => { d.close(); updateGoNote(); updateAiButtons(); };
+      d.querySelector('#diagRun').onclick = () => runDiag(d); const sc = d.querySelector('#slClear'); if (sc) sc.onclick = () => { window.V2N_CLOUD.clearSendLog(); openSettings(); }; runDiag(d);
       d.querySelector('#kSave').onclick = () => { K.set('provider', d.querySelector('#kProv').value); K.set('openai', d.querySelector('#kOai').value); K.set('anthropic', d.querySelector('#kAnt').value); K.set('proxy', d.querySelector('#kPx').value); K.set('access', d.querySelector('#kAc').value); loadConfig(); d.querySelector('#kSave').textContent = 'Saved ✓'; };
       d.querySelector('#kClear').onclick = () => { ['openai', 'anthropic', 'proxy', 'access'].forEach(k => K.set(k, '')); loadConfig(); openSettings(); };
       d.querySelector('#glSave').onclick = () => { localStorage.setItem('v2n_glossary', d.querySelector('#gl').value); d.querySelector('#glSave').textContent = 'Saved ✓'; };
@@ -37934,11 +38008,12 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
       const vf = d.querySelector('#vfy'); if (vf) vf.onclick = async () => { const o = d.querySelector('#vfyOut'); o.textContent = 'Checking… (loads the model with the network blocked and runs it on a second of silence)'; const r = await V.Models.verify(p => { if (p.text) o.textContent = p.text; }); o.innerHTML = r.ok ? '<b style="color:#0d5c30">Works offline ✓</b>' : '<b style="color:#b3261e">Problem:</b> ' + esc(r.problems.join(' ')) + ' Press Install / repair while online.'; };
       d.onclick = async e => {
         const b = e.target.closest('button'); if (!b) return;
+        if (b.dataset.diag) return diagAction(d, b);
         if (b.dataset.rm) { await V.Models.remove(b.dataset.rm); openSettings(); }
         if (b.dataset.inst) {
           const [k, id] = b.dataset.inst.split('|'); const row = b.closest('.modelrow'); const bar = row.querySelector('.bar'), pr = row.querySelector('.prog'); bar.classList.remove('hidden'); b.disabled = true;
           const onp = p => { if (p.progress != null) bar.firstElementChild.style.width = (p.progress <= 1 && k === 'llm' ? p.progress * 100 : p.progress) + '%'; pr.textContent = p.text || (p.file ? p.file.split('/').pop() + (p.progress ? ' ' + Math.round(p.progress) + '%' : '') : p.status || ''); };
-          try { k === 'asr' ? await V.installAsr(id, onp) : await V.installLlm(id, onp); pr.textContent = 'Installed and checked. It now works without internet.'; setTimeout(openSettings, 900); }
+          try { k === 'asr' ? await V.installAsr(id, onp) : await V.installLlm(id, onp); pr.textContent = 'Installed and checked. It now works without internet.'; setTimeout(() => { if ($('#dlg').open) openSettings(); }, 900); }
           catch (er) { pr.innerHTML = '<span style="color:#b3261e">' + esc(er.message) + '</span>'; b.disabled = false; }
         }
       };
@@ -37976,7 +38051,12 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
     addEventListener('beforeunload', e => { if (ed && ed.dirty) autosave(); if ((ed && ed.dirty) || busy()) { e.preventDefault(); e.returnValue = 'Work is still in progress or has unsaved edits.'; return e.returnValue; } });
     addEventListener('pagehide', () => { if (ed && ed.dirty) autosave(); });
     document.addEventListener('visibilitychange', () => { if (document.hidden && ed && ed.dirty) autosave(); });
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => { });
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').then(reg => {
+      const offer = sw => { $('#updBar').classList.remove('hidden'); $('#updBtn').onclick = () => { if (busy() && !confirm('Work is still running. Updating now will interrupt it (finished parts are kept). Update anyway?')) return; navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true }); sw.postMessage('SKIP_WAITING'); }; };
+      if (reg.waiting && navigator.serviceWorker.controller) offer(reg.waiting);
+      reg.addEventListener('updatefound', () => { const nw = reg.installing; if (nw) nw.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) offer(nw); }); });
+      setInterval(() => { if (V.Net.online) reg.update().catch(() => { }); }, 30 * 60e3); window.V2N_SWREG = reg;
+    }).catch(() => { });
     V.recover().then(() => { V.Net.on(onNet); V.Net.start(); updateGoNote(); });
   }
   init();
