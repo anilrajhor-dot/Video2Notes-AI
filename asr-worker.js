@@ -1,30 +1,32 @@
-/* On-device speech recognition (Whisper through transformers.js / ONNX Runtime Web).
-   Runs in a Web Worker so the interface never freezes. When allowRemote is false the engine is
-   forbidden from using the network, so offline mode can never send audio anywhere. */
-import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/dist/transformers.min.js';
-
-env.allowLocalModels = false;
-env.useBrowserCache = true;
-env.backends.onnx.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/dist/';
-
+/* On-device speech recognition (Whisper through transformers.js / ONNX Runtime Web), in a Web Worker.
+   The library version is chosen by the page (the same version that was cached when the model was installed),
+   so offline loading finds exactly the files that were stored. When allowRemote is false the engine may not use
+   the network for model files, so offline mode can never send audio anywhere. */
 const LANG = { en: 'english', hi: 'hindi', bn: 'bengali', ta: 'tamil', te: 'telugu', mr: 'marathi', gu: 'gujarati', pa: 'punjabi', kn: 'kannada', ml: 'malayalam', ur: 'urdu' };
-let asr = null, device = 'wasm';
+let lib = null, asr = null, device = 'wasm', key = null;
 
 async function build(model, dev, onp) {
   const dtype = dev === 'webgpu' ? { encoder_model: 'fp32', decoder_model_merged: 'q4' } : 'q8';
-  return pipeline('automatic-speech-recognition', model, { device: dev, dtype, progress_callback: onp });
+  return lib.pipeline('automatic-speech-recognition', model, { device: dev, dtype, progress_callback: onp });
 }
 
 self.onmessage = async (ev) => {
   const m = ev.data;
   try {
     if (m.type === 'load') {
-      env.allowRemoteModels = !!m.allowRemote;
-      const onp = p => self.postMessage({ type: 'progress', status: p.status, file: p.file, progress: p.progress, loaded: p.loaded, total: p.total });
-      device = (m.webgpu && 'gpu' in navigator) ? 'webgpu' : 'wasm';
-      try { asr = await build(m.model, device, onp); }
-      catch (e) {
-        if (device === 'webgpu' && m.allowRemote !== undefined) { device = 'wasm'; asr = await build(m.model, 'wasm', onp); } else throw e;
+      const base = `https://cdn.jsdelivr.net/npm/@huggingface/transformers@${m.ver}/dist/`;
+      if (!lib) {
+        try { lib = await import(base + 'transformers.min.js'); }
+        catch (e) { throw new Error('The speech engine files are not stored on this device' + (m.allowRemote ? ' and could not be downloaded.' : '. Open Settings while online and press "Install / repair".')); }
+      }
+      const env = lib.env; env.allowLocalModels = false; env.useBrowserCache = true; env.allowRemoteModels = !!m.allowRemote; env.backends.onnx.wasm.wasmPaths = base;
+      const k = m.model + '|' + (m.webgpu ? 'g' : 'w') + '|' + (m.allowRemote ? 'r' : 'l');
+      if (!asr || key !== k) {
+        const onp = p => self.postMessage({ type: 'progress', status: p.status, file: p.file, progress: p.progress, loaded: p.loaded, total: p.total });
+        device = (m.webgpu && 'gpu' in navigator) ? 'webgpu' : 'wasm';
+        try { asr = await build(m.model, device, onp); }
+        catch (e) { if (device === 'webgpu') { device = 'wasm'; asr = await build(m.model, 'wasm', onp); } else throw e; }
+        key = k;
       }
       self.postMessage({ type: 'loaded', id: m.id, device });
     } else if (m.type === 'transcribe') {
@@ -34,11 +36,11 @@ self.onmessage = async (ev) => {
       const segs = (out.chunks || []).map(c => ({ start: c.timestamp[0] ?? 0, end: c.timestamp[1] ?? c.timestamp[0] ?? 0, text: (c.text || '').trim() })).filter(s => s.text);
       if (!segs.length && (out.text || '').trim()) segs.push({ start: 0, end: 0, text: out.text.trim() });
       self.postMessage({ type: 'result', id: m.id, segs });
-    }
+    } else if (m.type === 'reset') { asr = null; key = null; self.postMessage({ type: 'reset-done', id: m.id }); }
   } catch (e) {
     let msg = String(e && e.message || e);
-    if (/Failed to fetch|NetworkError|not allowed|Could not locate file|local_files_only|allowRemoteModels/i.test(msg) && m.type === 'load' && !m.allowRemote)
-      msg = 'The speech model is not stored on this device. Install it from Settings while online.';
+    if (m.type === 'load' && !m.allowRemote && /Failed to fetch|NetworkError|not allowed|Could not locate file|local_files_only|allowRemoteModels|Unauthorized access|404/i.test(msg))
+      msg = 'The speech model is not stored on this device. Open Settings while online and press "Install / repair".';
     self.postMessage({ type: 'error', id: m.id, message: msg });
   }
 };
