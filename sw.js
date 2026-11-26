@@ -1,15 +1,20 @@
 /* Video2Notes service worker. Lets the app open offline and serves the speech-engine files (cdn.jsdelivr.net) from cache.
    It never caches or touches AI-provider calls, proxy calls, or model downloads (those are stored by the app itself). */
-const VERSION = '3.1.0';                    // bump on every release; the page offers the update, it never swaps under a running job
+const VERSION = '3.2.0';                    // bump on every release; the page offers the update, it never swaps under a running job
 const V = 'v2n-shell-' + VERSION;
-const SHELL = ['./', './asr-worker.js', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
+const SHELL = ['./', './asr-worker.js', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './apple-touch-icon.png'];
 self.addEventListener('install', e => e.waitUntil((async () => { const c = await caches.open(V); await c.addAll(SHELL); })()));
 self.addEventListener('message', e => { if (e.data === 'SKIP_WAITING') self.skipWaiting(); else if (e.data === 'VERSION' && e.source) e.source.postMessage({ version: VERSION }); });
 self.addEventListener('activate', e => e.waitUntil((async () => { for (const k of await caches.keys()) if (k.startsWith('v2n-shell') && k !== V) await caches.delete(k); await self.clients.claim(); })()));
 self.addEventListener('fetch', e => {
   const r = e.request; if (r.method !== 'GET') return; const u = new URL(r.url);
   const same = u.origin === location.origin, cdn = u.hostname === 'cdn.jsdelivr.net' && u.pathname.startsWith('/npm/');
-  if (!same && !cdn) return;
+  if (!same && !cdn) {
+    // Requests made by a Web Worker (the speech engine) to any host other than the model host are refused here, as a second
+    // lock behind the one inside the worker. The page itself is not affected.
+    if (e.clientId) e.respondWith((async () => { try { const c = await self.clients.get(e.clientId); if (c && c.type === 'worker' && !/(^|\.)(huggingface\.co|hf\.co)$/.test(u.hostname)) return Response.error(); } catch (_) { } return fetch(r); })());
+    return;
+  }
   if (cdn) {            // engine files: cache-first from the app's own engine cache, never re-downloaded once stored
     e.respondWith((async () => { const hit = await caches.match(r, { ignoreVary: true }); if (hit) return hit; try { return await fetch(r); } catch (_) { return Response.error(); } })());
     return;

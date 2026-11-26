@@ -36827,7 +36827,8 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
     const cids = new Map(), F = 4 + n * 3, S = 595.28 / PW; const withText = !!pageTexts;
     const cidOf = ch => { let c = cids.get(ch); if (!c) { c = cids.size + 1; cids.set(ch, c); } return c; };
     const hex4 = v => v.toString(16).padStart(4, '0');
-    const layer = i => { if (!withText) return ''; let o = 'BT\n3 Tr\n'; for (const t of pageTexts[i]) { const cps = [...t.s]; if (!cps.length) continue; const size = t.size * S; const tz = Math.max(10, Math.min(400, 100 * (t.w * S) / (size * cps.length))); o += `/F1 ${size.toFixed(2)} Tf ${tz.toFixed(1)} Tz 1 0 0 1 ${(t.x * S).toFixed(2)} ${((PH - t.y) * S).toFixed(2)} Tm <${cps.map(ch => hex4(cidOf(ch)) ).join('')}> Tj\n`; } return o + 'ET\n'; };
+    // pdfium (Chrome/Edge/Android viewers) silently drops a text run of exactly one character, so a lone character (e.g. the rupee sign) is written with a trailing space
+    const layer = i => { if (!withText) return ''; let o = 'BT\n3 Tr\n'; for (const t of pageTexts[i]) { const cps = [...t.s]; if (!cps.length) continue; const size = t.size * S; const tz = Math.max(10, Math.min(400, 100 * (t.w * S) / (size * cps.length))); o += `/F1 ${size.toFixed(2)} Tf ${tz.toFixed(1)} Tz 1 0 0 1 ${(t.x * S).toFixed(2)} ${((PH - t.y) * S).toFixed(2)} Tm <${(cps.length === 1 ? [cps[0], ' '] : cps).map(ch => hex4(cidOf(ch))).join('')}> Tj\n`; } return o + 'ET\n'; };
     obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
     obj(2, `<< /Type /Pages /Count ${n} /Kids [${jpegs.map((_, i) => `${4 + i * 3} 0 R`).join(' ')}] >>`);
     obj(3, `<< /Title (${title.replace(/[^\x20-\x7e]/g, '?').replace(/[()\\]/g, '')}) /Producer (Video2Notes) >>`);

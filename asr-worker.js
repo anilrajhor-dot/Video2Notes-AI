@@ -7,7 +7,18 @@ let lib = null, asr = null, device = 'wasm', key = null;
 // When the page says "no remote", every fetch made inside this worker (by the library, ONNX Runtime, anything) is answered
 // from Cache Storage only. A cache miss fails immediately and NEVER reaches the network.
 const realFetch = self.fetch.bind(self);
+// Offline mode also closes every other way a worker could talk to a server.
+const real = { XHR: self.XMLHttpRequest, WS: self.WebSocket, ES: self.EventSource, beacon: self.navigator && navigator.sendBeacon, imp: self.importScripts };
+const BLOCK = what => { throw new TypeError('Network blocked (offline mode): ' + what); };
+function lockOthers(locked) {
+  try { self.XMLHttpRequest = locked ? function () { BLOCK('XMLHttpRequest'); } : real.XHR; } catch (_) { }
+  try { self.WebSocket = locked ? function () { BLOCK('WebSocket'); } : real.WS; } catch (_) { }
+  try { self.EventSource = locked ? function () { BLOCK('EventSource'); } : real.ES; } catch (_) { }
+  try { if (self.navigator) navigator.sendBeacon = locked ? () => BLOCK('sendBeacon') : real.beacon; } catch (_) { }
+  try { if (real.imp) self.importScripts = locked ? () => BLOCK('importScripts') : real.imp; } catch (_) { }
+}
 function setNetwork(allowed) {
+  lockOthers(!allowed);
   self.fetch = allowed ? realFetch : async (input, init) => {
     const req = input instanceof Request ? input : new Request(input, init);
     const hit = await caches.match(req, { ignoreVary: true });
