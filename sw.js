@@ -1,6 +1,6 @@
 /* Video2Notes service worker. Lets the app open offline and serves the speech-engine files (cdn.jsdelivr.net) from cache.
    It never caches or touches AI-provider calls, proxy calls, or model downloads (those are stored by the app itself). */
-const VERSION = '3.2.0';                    // bump on every release; the page offers the update, it never swaps under a running job
+const VERSION = '3.3.0';                    // bump on every release; the page offers the update, it never swaps under a running job
 const V = 'v2n-shell-' + VERSION;
 const SHELL = ['./', './asr-worker.js', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './apple-touch-icon.png'];
 self.addEventListener('install', e => e.waitUntil((async () => { const c = await caches.open(V); await c.addAll(SHELL); })()));

@@ -37225,7 +37225,17 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
   // ------------------------------------------------------------ provider calls
   function explain(r, body) {
     const d = (body && body.error && (body.error.message || body.error)) || '';
-    if (proxy() && (r.status === 401 || r.status === 403)) return `The proxy rejected the access code (${r.status}). Check the access code in Settings. ${d}`;
+    if (proxy()) {
+      const c = body && body.error && body.error.code, ra = r.headers && r.headers.get && r.headers.get('Retry-After');
+      if (c === 'invalid_access_code' || (!c && r.status === 401)) return 'The access code was not accepted by the proxy. Check the access code in Settings (codes are case-sensitive) or ask the owner for a new one.';
+      if (c === 'origin_not_allowed' || (!c && r.status === 403)) return 'The proxy does not allow requests from this web address. The owner must set ALLOWED_ORIGIN to this site in the Worker settings.';
+      if (c === 'daily_limit') return 'The daily usage limit for this access code has been reached. Try again tomorrow, or ask the owner to raise the limit.';
+      if (c === 'rate_limited') return 'Too many requests too quickly for the proxy. Wait ' + (ra || 'a minute') + ' seconds and press Retry.';
+      if (c === 'too_large') return 'This audio piece is larger than the proxy allows. Use a shorter recording, or ask the owner to raise MAX_BODY_MB.';
+      if (c === 'provider_not_configured') return 'This AI provider is not set up on the proxy. Choose another provider in Settings or ask the owner.';
+      if (c === 'upstream_timeout') return 'The AI provider took too long to answer. Press Retry.';
+      if (c === 'upstream_unavailable') return 'The AI provider is not reachable right now. Press Retry in a few minutes.';
+    }
     if (r.status === 413) return `The audio piece is too large for the proxy (413). ${d}`;
     if (r.status === 401 || r.status === 403) return `The AI service rejected the API key (${r.status}). Check the key in Settings. ${d}`;
     if (r.status === 429) return `AI usage/rate limit reached (429). Wait a minute and press Retry. ${d}`;
@@ -37236,11 +37246,13 @@ while (n === a[++i] && n === a[++i] && n === a[++i] && n === a[++i] && n === a[+
     let last;
     for (let i = 0; i < tries; i++) {
       let r;
-      try { r = await mk(); } catch (e) { last = new AIError('Could not reach the AI service. Check your internet connection (and that your API provider allows browser access).'); await sleep(2000 * (i + 1)); continue; }
+      try { r = await mk(); } catch (e) { last = new AIError(proxy() ? 'Could not reach the proxy. Check the proxy address and your internet connection. If both are right, the proxy does not allow this web address: the owner must set ALLOWED_ORIGIN to this site (does not allow requests from this web address).' : 'Could not reach the AI service. Check your internet connection (and that your API provider allows browser access).'); await sleep(2000 * (i + 1)); continue; }
       if (r.ok) return r;
       let b = null; try { b = await r.json(); } catch (_) { }
       last = new AIError(explain(r, b));
-      if ([429, 500, 502, 503, 504].includes(r.status)) { await sleep(Math.min(30000, 3000 * 2 ** i)); continue; }
+      const ec = b && b.error && b.error.code;
+      if (ec === 'daily_limit' || ec === 'invalid_access_code' || ec === 'too_large' || ec === 'provider_not_configured') throw last;
+      if ([429, 500, 502, 503, 504].includes(r.status)) { const ra = +(r.headers.get('Retry-After') || 0); await sleep(ra > 0 ? Math.min(60000, ra * 1000) : Math.min(30000, 3000 * 2 ** i)); continue; }
       throw last;
     }
     throw last;
